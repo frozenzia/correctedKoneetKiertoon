@@ -1,0 +1,269 @@
+#!/usr/bin/python
+# -* coding: utf-8 *-
+
+# Linux-tuki.fi etäyhteys
+# Copyright (C) 2008 Osma Suominen / Osuuskunta Sange <osma.suominen@sange.fi>
+# Copyright (C) 2010 Otto Kekäläinen / Osuuskunta Sange <otto.kekalainen@sange.fi>
+# Copyright (C) 2011-12 Otto Kekäläinen / Seravo Oy <otto.kekalainen@seravo.fi>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+import gtk
+import time
+import subprocess
+import sys
+import random
+import urllib, urllib2
+import socket
+import platform
+import os.path
+
+try:
+  import pxssh
+except ImportError:
+  print >>sys.stderr, "Tämä ohjelma vaatii pexpect-moduulin."
+  print >>sys.stderr, "Voit asentaa sen komennolla: apt-get install python-pexpect"
+  sys.exit(1)
+
+SSHSERVER = "remote.seravo.fi"
+SSHUSER = "remote-desktop"
+SSHOPTS = ":localhost:5900 -N" # must have -N as using on server /bin/false instead of /bin/falselogin
+SSHPORT = random.randint(5900,5999)
+SSHPASSWD = "matti456"
+
+X11VNC = "/usr/bin/x11vnc"
+KILLX11VNC = "/usr/bin/killall"
+PIDOF = "/bin/pidof"
+
+# e.g. RHEL has different path
+if (os.path.exists(PIDOF) == False):
+  PIDOF = "/sbin/pidof"
+
+## Palvelin
+# Palvelimella nyt shellinä /bin/false, mutta sillä yhteyden avaus 
+# vaatii -N option. Aiemmin käytetty /usr/bin/falselogin olisi parempi
+# mutta se tekee buffer overflowt Ubuntulla, pitää odottaa että ko.
+# paketti korjataan.
+
+## RHEL/CentOS:
+# PIDOF = "/sbin/pidof"
+# install x11vnc from RPMForge or package in OBS
+# as embedded binary, since it does not need more dependencies
+#
+# if using TigerVNC, which is available from default repos:
+# - X11VNC = "/usr/bin/vncserver"
+# - pidof Xvnc, not x11vnc
+# - set dummy password on first opening, 
+#   log the password to server for support person to see
+# -  no options to vncserver
+# -  SSHOPTS = ":localhost:5901"
+# ..and yet still does not work?
+
+X11VNCTIMEOUT = 30
+
+HELPTEXT = "Muodostaa etäyhteyden, jonka " + \
+           "kautta KoneetKiertoon.fi:n tukihenkilö pääsee käsiksi \n" + \
+           "tietokoneeseesi ja auttaa sinua ongelman ratkaisemisessa."
+
+LOG_URL = "http://seravo.fi/seravo-remote-log"
+
+LOG_HOSTNAME = socket.gethostname()
+LOG_OS_VER = platform.linux_distribution()[0] + " " + \
+    platform.linux_distribution()[1] + " " + \
+    platform.machine()
+
+class pxsshFalselogin (pxssh.pxssh):
+  """a version of pxssh that works with a falselogin shell"""
+  
+  def __init__(self):
+    pxssh.pxssh.__init__(self, timeout=10)
+  
+  def set_unique_prompt(self, optional_prompt=None):
+    return 1
+  
+  def logout(self):
+    self.sendline("")
+    self.expect(pxssh.EOF)
+
+class Etayhteys:
+  ssh = None
+  remote_access_state = 'false'
+  view_only_state = 'true'
+  local_only_state = 'false'
+  
+  def __init__(self):
+    log("Program started")
+    
+    self.window = gtk.Window(gtk.WINDOW_TOPLEVEL)
+    self.window.set_title("KoneetKiertoon.fi:n etäyhteys")
+    self.window.set_position(gtk.WIN_POS_CENTER)
+    
+    # huolehdi että ohjelma voidaan sulkea siististi
+    self.window.connect("destroy", self.sulje)
+    
+    # set up user interface
+    vbox = gtk.VBox(spacing=12)
+    self.hbox_image = gtk.HBox()
+    self.hbox_message = gtk.HBox(spacing=12)
+    self.hbox_button = gtk.HBox(homogeneous=False)
+    
+    image = gtk.Image()
+    # assumes /usr always installdir
+    image.set_from_file('/usr/share/pixmaps/koneetkiertoon-x32.png')
+    self.hbox_image.add(image)
+
+    self.msg = gtk.Label()
+    self.msg.set_markup("Tervetuloa käyttämään KoneetKiertoon.fi:n etäyhteysohjelmaa,\n jonka avulla tukihenkilö voi antaa etätukea.\n\nLisätietoja sivulla <a href='http://koneetkiertoon.fi/'>koneetkiertoon.fi</a>")
+    self.hbox_message.add(self.msg)
+
+    avaa_btn = gtk.Button("_Avaa etäyhteys")
+    avaa_btn.connect("clicked", self.avaa, None)
+    self.hbox_button.pack_start(avaa_btn, expand=True)    
+    
+    vbox.pack_start(self.hbox_image, expand=False)
+    vbox.pack_start(self.hbox_message, expand=False)
+    vbox.pack_start(self.hbox_button, expand=False)
+    
+    self.window.add(vbox)
+    self.window.set_border_width(24)
+
+    self.window.show_all()
+    
+  def avaa(self, widget, data=None):
+    
+    log("Opening SSH connection")
+    self.hbox_button.hide()
+    self.msg.set_markup("Avataan etäyhteyttä...")
+    
+    # huolehditaan siitä että GUI ehtii piirtyä
+    while gtk.events_pending():
+      gtk.main_iteration(False)
+    
+    success = False
+    error = None
+    
+    try:
+      self.ssh = pxsshFalselogin()
+      # wait a little bit so that initialization is done
+      time.sleep(3)
+      success = self.ssh.login("-R %s%s %s" % (SSHPORT, SSHOPTS, SSHSERVER), SSHUSER, SSHPASSWD)
+    except Exception, e:
+      error = str(e)
+      log(error)
+    
+    # normaalisti tulee aina aikavirhe, sillä -N -optiolle SSH ei anna mitään shelliä
+    if (error != "Timeout exceeded in read_nonblocking()." and error != None):
+      self.ssh = None
+      # näytä virheilmo
+      self.msg.set_markup("Etäyhteyden avaus epäonnistui.")
+      self.hbox_button.show()
+      return
+    
+    # käynnistä vino
+    
+    log("Otetaan käyttöön etätyöpöytä...")
+    
+    # huolehditaan siitä että GUI ehtii piirtyä
+    while gtk.events_pending():
+      gtk.main_iteration(False)
+    
+    try:
+      gct = subprocess.Popen([X11VNC, "-localhost", "-nopw", "-bg", "-nevershared", "-forever"])
+      ret = gct.wait()
+    except Exception, e:
+      ret = -1
+      
+    if ret != 0:
+      # siivoa ssh-yhteys pois
+      self.sammuta_ssh()
+      
+      # näytä virheilmo
+      self.msg.set_markup("Virhe etätyöpöydän käyttöönotossa: X11VNC-palvelimen käynnistys epäonnistui.")
+      return
+      
+    # odota X11VNC:n käynnistymistä
+    c = X11VNCTIMEOUT
+    success = False
+    while c > 0:
+      po = subprocess.Popen([PIDOF, "x11vnc"], stdout=subprocess.PIPE)
+      (out, err) = po.communicate()
+      if out.strip() != '':
+        success = True
+        break
+      
+      c -= 1
+      time.sleep(1)
+    
+    if not success:
+      self.sammuta_ssh()
+      self.msg.set_markup("Virhe etätyöpöydän käyttöönotossa: X11VNC ei käynnisty.")
+      return
+          
+    
+    # onnistui, aseta kälin tila sen mukaisesti    
+    log("Connection open at port %s" % SSHPORT)
+    
+    self.msg.set_markup("Yhteystunnus on <span weight='bold' size='x-large'>%s</span>\nKerro tunnus tukihenkilölle.\n\nNäet ruudullasi kaiken mitä tukihenkilö tekee.\nVoit sulkea etäyhteysohjelman koska tahansa." % SSHPORT)
+    
+  def sammuta_x11vnc(self):
+    try:
+      gct = subprocess.Popen([KILLX11VNC, "x11vnc"])
+      ret = gct.wait()
+    except Exception, e:
+      pass
+  
+  
+  def sammuta_ssh(self):
+    if self.ssh is None: return
+    try:
+      self.ssh.logout()
+    except Exception, e:
+      error = str(e)
+      log(error)
+      self.ssh.close()
+      self.ssh = None
+
+  
+  def sulje(self, widget, data=None):
+    log("Closing program")
+    self.msg.set_markup("Katkaistaan etäyhteyttä") # ei toimi, miksi?
+    time.sleep(2)
+  
+    # sammuta vino, ellei se ollut jo valmiiksi päällä
+    if self.remote_access_state == 'false':
+      log("Closing X11VNC")
+      self.sammuta_x11vnc()
+    
+    # sammuta SSH
+    self.msg.set_markup("Katkaistaan etäyhteyttä") # ei toimi, miksi?
+    log("Closing SSH connection")
+    self.sammuta_ssh()
+    
+    gtk.main_quit()
+    return True
+  
+  def main(self):
+    gtk.main()
+
+def log(msg):
+  get = urllib.urlencode({"host": LOG_HOSTNAME, "msg": msg, "os-ver": LOG_OS_VER})
+  print get
+  response = urllib2.urlopen(urllib2.Request(LOG_URL + "?" + get))
+  print msg
+
+if __name__ == '__main__':
+  eta = Etayhteys()
+  eta.main()
+

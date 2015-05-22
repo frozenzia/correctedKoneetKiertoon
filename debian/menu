@@ -1,0 +1,2 @@
+?package(koneetkiertoon-etayhteys):needs="X11" section="Applications/Network/Communication"\
+  title="Etäyhteys KoneetKiertoon.fi:n asiakkaille" command="/usr/bin/koneetkiertoon-etayhteys"

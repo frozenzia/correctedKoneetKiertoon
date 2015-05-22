@@ -1,0 +1,45 @@
+# The source of the program recides in this repo as is.
+# Using these commands you can generate a plain source tar.gz
+# and from it the actual deb package.
+#
+# This way you'll have under folder dist/ all the files needed
+# when uploading and distributing a program.
+#
+# See also:
+# http://ghantoos.org/2008/10/19/creating-a-deb-package-from-a-python-setuppy/
+# https://wiki.ubuntu.com/PackagingGuide/Python
+# http://guide.python-distribute.org/creation.html
+# http://docs.python.org/distutils/builtdist.html#creating-rpm-packages
+#
+# Rember to update the version number in these commands!
+
+# cleanup
+rm -rf dist/*
+
+
+# after updating the program itself, update the changelog with
+debchange --package koneetkiertoon-etayhteys -v 2.4.3
+
+# packages current source as a tar.gz with version name
+# only file added to current directory is MANIFEST
+python setup.py sdist
+
+export DEBFULLNAME="Otto Kekäläinen"
+export DEBEMAIL="otto.kekalainen@seravo.fi"
+export VERSION=2.4.3
+
+cd dist
+tar -xf koneetkiertoon-etayhteys-$VERSION.tar.gz 
+cd koneetkiertoon-etayhteys-$VERSION/
+# only on first time
+dh_make -c gpl -i -f ../koneetkiertoon-etayhteys-$VERSION.tar.gz 
+
+# copy Debian files to packaging tempalte
+cp ../../debian/* debian/
+
+# Build!
+debuild
+
+# Clean up before next build
+debclean
+

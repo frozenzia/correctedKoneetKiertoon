@@ -1,0 +1,11 @@
+Metadata-Version: 1.0
+Name: koneetkiertoon-etayhteys
+Version: 2.4.3
+Summary: Etäyhteysohjelma KoneetKiertoon.fi:n asiakkaille
+Home-page: http://koneetkiertoon.fi/
+Author: Suomen Linux-tuki (Seravo Oy)
+Author-email: linux-tuki@seravo.fi
+License: GNU GPL
+Download-URL: http://koneetkiertoon.fi/
+Description:  Tämän ohjelman avulla Koneet Kiertoon -asiakkaan on helppo avata etäyhteys tukihenkilöä varten.
+Platform: linux
